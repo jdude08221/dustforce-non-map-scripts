@@ -2,72 +2,91 @@
 if ($args.Count -eq 0) {
     Write-Host "Error: No arguments provided."
     Write-Host "Usage:"
-    Write-Host "run.ps1 -t <tag> OR -m <map1> <map2> ..."
+    Write-Host "run.ps1 [-t <tag>] [-m <map1> <map2> ...] [-force]"
     exit 1
 }
 
-# Check if the first argument is -t or -m
-$flag = $args[0]
+# Initialize variables
+$Tag = $null
+$Maps = @()
+$Force = $false  # Default value for Force
 
-if ($flag -eq "-t") {
-    # Ensure a tag argument is provided
-    if ($args.Count -ne 2) {
-        Write-Host "Error: Missing tag argument."
-        Write-Host "Usage:"
-        Write-Host "run.ps1 -t <tag>"
-        exit 1
+# Parse arguments
+for ($i = 0; $i -lt $args.Count; $i++) {
+    switch ($args[$i]) {
+        "-t" {
+            # Process the tag flag
+            if ($i + 1 -lt $args.Count) {
+                $Tag = $args[$i + 1]
+                $i++
+            } else {
+                Write-Host "Error: Missing value for -t flag."
+                exit 1
+            }
+        }
+        "-m" {
+            # Process the maps flag
+            if ($i + 1 -lt $args.Count) {
+                $Maps = $args[($i + 1)..($args.Count - 1)]
+                $i = $args.Count - 1
+            } else {
+                Write-Host "Error: Missing value for -m flag."
+                exit 1
+            }
+        }
+        "-force" {
+            # Enable the force flag
+            $Force = $true
+        }
     }
+}
 
-    # Retrieve the tag argument
-    $Tag = $args[1]
+# Ensure $Tag or $Maps is set
+if (-not $Tag -and $Maps.Count -eq 0) {
+    Write-Host "Error: You must specify either -t <tag> or -m <map1> <map2> ..."
+    exit 1
+}
+
+# Logic for -t (tag mode)
+if ($Tag) {
     Write-Host "Processing tag: $Tag"
 
-    # Fetch the maps for the specified tag and save them to a file
-    python atlasMaps.py $Tag > maps.txt
+    # Check if the tag file exists
+    $tagFile = "./$Tag.txt"
+    if (($Force -eq $false) -and (Test-Path $tagFile)) {
+        Write-Host "Using cached map list from file: $tagFile"
+    } else {
+        Write-Host "Querying atlas for maps under tag: $Tag"
+        python atlasMaps.py $Tag > $tagFile
 
-    # Read the maps from the file as an array
-    $maps = Get-Content maps.txt
-    if ($maps.Count -eq 0) {
-        Write-Host "Error: No maps found for the given tag."
+        # Check if the file is empty or the list of maps is empty
+        if ((Test-Path $tagFile) -and ((Get-Content $tagFile).Count -eq 0)) {
+            Write-Host "No maps were found for tag: $Tag. Deleting empty cache file."
+            Remove-Item $tagFile
+        } elseif ((Test-Path $tagFile) -and ((Get-Item $tagFile).Length -eq 0)) {
+            Write-Host "Cache file for tag $Tag has zero size. Deleting file."
+            Remove-Item $tagFile
+        }
+    }
+
+    # Read maps from the file if it exists
+    if (Test-Path $tagFile) {
+        $Maps = Get-Content $tagFile
+    } else {
+        Write-Host "Error: No maps found for the given tag and cache file was removed."
         exit 1
     }
 
-    # Debug: Print the list of maps
-    Write-Host "Maps to be processed: $maps"
+    Write-Host "Maps to be processed: $Maps"
+}
 
-    # Pass the array of maps directly to Python
-    python numSSes.py @maps > output.txt
-
-    # Extract and display the result
-    $finalResult = Get-Content output.txt | Select-String -Pattern "Number of SSes" | Select-Object -Last 1
-    $finalText = $finalResult -replace "Number of SSes:", "Number of SSes under tag:"
-    Write-Host $finalText
-
-} elseif ($flag -eq "-m") {
-    # Ensure map arguments are provided
-    if ($args.Count -le 1) {
-        Write-Host "Error: Missing map arguments."
-        Write-Host "Usage:"
-        Write-Host "run.ps1 -m <map1> <map2> ..."
-        exit 1
-    }
-
-    # Retrieve the map arguments (skip the flag itself)
-    $Map = $args[1..$args.Count]
-    Write-Host "Processing maps: $Map"
-
-    # Pass the array of maps directly to Python
-    python numSSes.py @Map > output.txt
+# Logic for -m (map mode)
+if ($Maps.Count -gt 0) {
+    Write-Host "Processing maps: $Maps"
+    python numSSes.py @Maps > output.txt
 
     # Extract and display the result
     $finalResult = Get-Content output.txt | Select-String -Pattern "Number of SSes" | Select-Object -Last 1
-    $finalText = $finalResult -replace "Number of SSes:", "Number of SSes under map:"
+    $finalText = $finalResult -replace "Number of SSes:", "Number of SSes:"
     Write-Host $finalText
-
-} else {
-    # Invalid flag provided
-    Write-Host "Error: Invalid flag provided. Use -t for tag or -m for map."
-    Write-Host "Usage:"
-    Write-Host "run.ps1 -t <tag> OR -m <map1> <map2> ..."
-    exit 1
 }
