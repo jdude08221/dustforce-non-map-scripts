@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hitbox Comparer Web</title>
+  <style>
+    body { font-family: sans-serif; }
+    #controls { float: left; width: 220px; }
+    #canvas-container { margin-left: 240px; height: 100vh; }
+    canvas { border: 1px solid #888; width: 100%; height: 100%; display: block; }
+    ul { list-style: none; padding-left: 1em; }
+    li { margin-bottom: 2px; }
+    .tree-label { cursor: pointer; }
+    .tree-arrow {
+      display: inline-block;
+      width: 1em;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.1s;
+    }
+    .tree-arrow.expanded {
+      transform: rotate(90deg);
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <h3>Images</h3>
+    <div id="tree"></div>
+  </div>
+  <div id="canvas-container">
+    <canvas id="result" width="800" height="600"></canvas>
+  </div>
+  <script>
+    let selectedFiles = [];
+    let overlayImg = null;
+    let panX = 0, panY = 0;
+    let zoom = 2.0; // More zoomed in on initial load
+    const unit = 48;
+    const pxPerUnit = 1.0 / (48.0 / 95.0);
+
+    // Debug: Offset in overlay image pixels to align left side of reference hitbox with y-axis
+    let overlayOffsetX = -258;
+    let overlayOffsetY = -198;
+
+    // AbortController for race-free image loading
+    let composeAbortController = null;
+
+    function setChildrenChecked(li, checked) {
+      let childCheckboxes = li.querySelectorAll('ul input[type=checkbox]');
+      childCheckboxes.forEach(cb => { cb.checked = checked; });
+    }
+
+    function updateParentChecked(li) {
+      let parentLi = li.parentElement.closest('li');
+      if (!parentLi) return;
+      let parentCb = parentLi.querySelector('input[type=checkbox]');
+      let childCheckboxes = parentLi.querySelectorAll('ul > li > input[type=checkbox]');
+      let allChecked = Array.from(childCheckboxes).every(cb => cb.checked);
+      let anyChecked = Array.from(childCheckboxes).some(cb => cb.checked);
+      parentCb.checked = allChecked;
+      parentCb.indeterminate = !allChecked && anyChecked;
+      updateParentChecked(parentLi);
+    }
+
+    function updateSelectedFiles() {
+      selectedFiles = Array.from(document.querySelectorAll('#tree input[type=checkbox]'))
+        .filter(cb => cb.value && cb.checked)
+        .map(cb => cb.value);
+    }
+
+    function renderTree(tree, parent) {
+      let ul = document.createElement('ul');
+      ul.style.display = parent ? "none" : ""; // Hide all except root
+      for (let node of tree) {
+        let li = document.createElement('li');
+        let cb = document.createElement('input');
+        cb.type = "checkbox";
+        cb.dataset.label = node.label;
+        // Only leaf nodes get a value
+        if (!node.children) {
+          cb.value = node.file;
+        } else {
+          cb.value = ""; // explicitly clear value for parent nodes
+        }
+        li.appendChild(cb);
+
+        if (node.children) {
+          // Arrow
+          let arrow = document.createElement('span');
+          arrow.textContent = "▶";
+          arrow.className = "tree-arrow";
+          arrow.onclick = function(e) {
+            e.stopPropagation();
+            let childUl = li.querySelector('ul');
+            if (childUl) {
+              let expanded = childUl.style.display !== "none";
+              childUl.style.display = expanded ? "none" : "";
+              arrow.classList.toggle("expanded", !expanded);
+            }
+          };
+          li.appendChild(arrow);
+
+          cb.onchange = function() {
+            setChildrenChecked(li, cb.checked);
+            updateParentChecked(li);
+            setTimeout(() => {
+              updateSelectedFiles();
+              updateImage();
+            }, 0);
+          };
+          let label = document.createElement('span');
+          label.textContent = node.label;
+          label.className = "tree-label";
+          label.onclick = arrow.onclick; // clicking label also toggles
+          li.appendChild(label);
+          li.appendChild(renderTree(node.children, li));
+        } else {
+          cb.onchange = function() {
+            updateParentChecked(li);
+            setTimeout(() => {
+              updateSelectedFiles();
+              updateImage();
+            }, 0);
+          };
+          li.appendChild(document.createTextNode(" " + node.label));
+        }
+        ul.appendChild(li);
+      }
+      return ul;
+    }
+
+    fetch('/api/tree').then(r=>r.json()).then(tree=>{
+      document.getElementById('tree').appendChild(renderTree(tree, null));
+      // Auto-select Dustman and all its children, and expand Characters and Dustman nodes
+      setTimeout(() => {
+        // Expand "Characters" node
+        const charsLabel = Array.from(document.querySelectorAll('#tree .tree-label'))
+          .find(lbl => lbl.textContent.trim().toLowerCase() === 'characters');
+        if (charsLabel) {
+          const charsArrow = charsLabel.previousSibling;
+          if (charsArrow && charsArrow.classList.contains('tree-arrow')) {
+            charsArrow.classList.add('expanded');
+            let charsUl = charsLabel.parentElement.querySelector('ul');
+            if (charsUl) charsUl.style.display = "";
+          }
+        }
+        // Expand "Dustman" node
+        const dustmanLabel = Array.from(document.querySelectorAll('#tree .tree-label'))
+          .find(lbl => lbl.textContent.trim().toLowerCase() === 'dustman');
+        if (dustmanLabel) {
+          const dustmanArrow = dustmanLabel.previousSibling;
+          if (dustmanArrow && dustmanArrow.classList.contains('tree-arrow')) {
+            dustmanArrow.classList.add('expanded');
+            let dustmanUl = dustmanLabel.parentElement.querySelector('ul');
+            if (dustmanUl) dustmanUl.style.display = "";
+          }
+        }
+        // Auto-select Dustman and all its children
+        const dustmanCb = Array.from(document.querySelectorAll('#tree input[type=checkbox]'))
+          .find(cb => cb.dataset.label && cb.dataset.label.toLowerCase() === 'dustman');
+        if (dustmanCb) {
+          dustmanCb.checked = true;
+          setChildrenChecked(dustmanCb.closest('li'), true);
+          updateSelectedFiles();
+          updateImage();
+        }
+        // Ensure indeterminate state is set on initial load
+        const allChecked = Array.from(document.querySelectorAll('#tree input[type=checkbox]:checked'));
+        allChecked.forEach(cb => {
+          const li = cb.closest('li');
+          if (li) updateParentChecked(li);
+        });
+      }, 0);
+    });
+
+    function drawGrid(ctx, width, height, panX, panY, zoom) {
+      ctx.save();
+      ctx.clearRect(0, 0, width, height);
+
+      // Transform for pan/zoom
+      ctx.translate(panX, panY);
+      ctx.scale(zoom, zoom);
+
+      let major = unit;      // 48 units
+      let minor = unit / 4;  // 12 units
+
+      let left = -panX / zoom;
+      let top = -panY / zoom;
+      let right = left + width / zoom;
+      let bottom = top + height / zoom;
+
+      // --- Minor grid lines (every 12 units, more transparent) ---
+      ctx.strokeStyle = "rgba(180,180,180,0.25)";
+      ctx.lineWidth = 1 / zoom;
+      ctx.beginPath();
+      for (let x = Math.floor(left / minor) * minor; x < right; x += minor) {
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+      }
+      for (let y = Math.floor(top / minor) * minor; y < bottom; y += minor) {
+        ctx.moveTo(left, y);
+        ctx.lineTo(right, y);
+      }
+      ctx.stroke();
+
+      // --- Major grid lines (every 48 units, less transparent) ---
+      ctx.strokeStyle = "rgba(180,180,180,1)";
+      ctx.lineWidth = 2 / zoom;
+      ctx.beginPath();
+      for (let x = Math.floor(left / major) * major; x < right; x += major) {
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+      }
+      for (let y = Math.floor(top / major) * major; y < bottom; y += major) {
+        ctx.moveTo(left, y);
+        ctx.lineTo(right, y);
+      }
+      ctx.stroke();
+
+      // --- Axes ---
+      ctx.strokeStyle = "black";
+      ctx.lineWidth = 2 / zoom;
+      ctx.beginPath();
+      ctx.moveTo(0, top);
+      ctx.lineTo(0, bottom);
+      ctx.moveTo(left, 0);
+      ctx.lineTo(right, 0);
+      ctx.stroke();
+
+      // --- Major ticks and labels ---
+      ctx.fillStyle = "black";
+      ctx.font = `${14 / zoom}px sans-serif`;
+      for (let x = Math.floor(left / major) * major; x < right; x += major) {
+        if (x === 0) continue;
+        ctx.beginPath();
+        ctx.moveTo(x, -6 / zoom);
+        ctx.lineTo(x, 6 / zoom);
+        ctx.stroke();
+        ctx.fillText(Math.round(x), x + 2 / zoom, 14 / zoom);
+      }
+      for (let y = Math.floor(top / major) * major; y < bottom; y += major) {
+        if (y === 0) continue;
+        ctx.beginPath();
+        ctx.moveTo(-6 / zoom, y);
+        ctx.lineTo(6 / zoom, y);
+        ctx.stroke();
+        ctx.fillText(Math.round(y), 8 / zoom, y - 2 / zoom);
+      }
+
+      // --- Minor ticks (every 12 units, more transparent, no labels) ---
+      ctx.strokeStyle = "rgba(0,0,0,0.2)";
+      ctx.lineWidth = 1 / zoom;
+      for (let x = Math.floor(left / minor) * minor; x < right; x += minor) {
+        if (Math.abs(x % major) < 1e-6) continue; // skip if it's a major tick
+        ctx.beginPath();
+        ctx.moveTo(x, -3 / zoom);
+        ctx.lineTo(x, 3 / zoom);
+        ctx.stroke();
+      }
+      for (let y = Math.floor(top / minor) * minor; y < bottom; y += minor) {
+        if (Math.abs(y % major) < 1e-6) continue; // skip if it's a major tick
+        ctx.beginPath();
+        ctx.moveTo(-3 / zoom, y);
+        ctx.lineTo(3 / zoom, y);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawAll() {
+      let canvas = document.getElementById('result');
+      let ctx = canvas.getContext('2d');
+      drawGrid(ctx, canvas.width, canvas.height, panX, panY, zoom);
+
+      // Draw grey box at (0,0), bottom middle, scaled
+      ctx.save();
+      ctx.translate(panX, panY);
+      ctx.scale(zoom, zoom);
+
+      let scale = 0.5; // match overlay scale!
+      let player_game_width = 48 * scale;
+      let player_game_height = 96 * scale;
+      let player_px_width = player_game_width * pxPerUnit;
+      let player_px_height = player_game_height * pxPerUnit;
+      ctx.fillStyle = "rgba(128,128,128,0.25)";
+      ctx.fillRect(
+        -player_px_width/2,
+        -player_px_height,
+        player_px_width,
+        player_px_height
+      );
+
+      // Draw overlay image with debug offset
+      if (overlayImg) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        ctx.drawImage(
+          overlayImg,
+          -overlayImg.width / 2 - overlayOffsetX, // shift overlay horizontally
+          -overlayImg.height - overlayOffsetY     // shift overlay vertically
+        );
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    function updateImage() {
+      // Abort previous request if still pending
+      if (composeAbortController) {
+        composeAbortController.abort();
+      }
+      composeAbortController = new AbortController();
+
+      fetch('/api/compose', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({files: selectedFiles}),
+        signal: composeAbortController.signal
+      })
+      .then(r => {
+        if (!r.ok) throw new Error("Request failed");
+        return r.blob();
+      })
+      .then(blob => {
+        let url = URL.createObjectURL(blob);
+        let img = new window.Image();
+        img.onload = function() {
+          overlayImg = img;
+          drawAll();
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      })
+      .catch(err => {
+        // Ignore abort errors, log others
+        if (err.name !== 'AbortError') {
+          console.error(err);
+        }
+      });
+    }
+
+    // Mouse pan/zoom
+    let isDragging = false, lastX = 0, lastY = 0;
+    const canvas = document.getElementById('result');
+    canvas.addEventListener('mousedown', e => {
+      isDragging = true;
+      lastX = e.offsetX;
+      lastY = e.offsetY;
+    });
+    canvas.addEventListener('mousemove', e => {
+      if (isDragging) {
+        panX += e.offsetX - lastX;
+        panY += e.offsetY - lastY;
+        lastX = e.offsetX;
+        lastY = e.offsetY;
+        drawAll();
+      }
+    });
+    canvas.addEventListener('mouseup', e => { isDragging = false; });
+    canvas.addEventListener('mouseleave', e => { isDragging = false; });
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      let scale = e.deltaY < 0 ? 1.1 : 0.9;
+      // Zoom around mouse
+      let mx = (e.offsetX - panX) / zoom;
+      let my = (e.offsetY - panY) / zoom;
+      zoom *= scale;
+      panX = e.offsetX - mx * zoom;
+      panY = e.offsetY - my * zoom;
+      drawAll();
+    }, {passive:false});
+
+    // Redraw on resize and set origin to center (customize panX/panY for initial view)
+    window.addEventListener('resize', () => {
+      let canvas = document.getElementById('result');
+      canvas.width = canvas.parentElement.offsetWidth;
+      canvas.height = canvas.parentElement.offsetHeight;
+      panX = canvas.width / 2 - 500;
+      panY = canvas.height / 2 + 250;
+      drawAll();
+    });
+    // Set origin to center on initial load
+    window.dispatchEvent(new Event('resize'));
+  </script>
+</body>
+</html>
