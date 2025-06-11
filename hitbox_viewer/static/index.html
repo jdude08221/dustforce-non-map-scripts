@@ -39,11 +39,25 @@
     const pxPerUnit = 1.0 / (48.0 / 95.0);
 
     // Debug: Offset in overlay image pixels to align left side of reference hitbox with y-axis
-    let overlayOffsetX = -258;
-    let overlayOffsetY = -198;
+    let overlayOffsetX = 65;
+    let overlayOffsetY = 650;
+
+    // Character color map
+    const CHAR_COLORS = {
+      'dm': '#7e98d1',    // Dustman
+      'dg': '#ba5a4e',    // Dustgirl
+      'dk': '#b17fd1',    // Dustkid
+      'dw': '#99b069'     // Dustworth
+    };
 
     // AbortController for race-free image loading
     let composeAbortController = null;
+
+    // --- Hitbox rectangles ---
+    let hitboxData = {};
+    fetch('hitboxes.json')
+      .then(r => r.json())
+      .then(data => { hitboxData = data; drawAll(); });
 
     function setChildrenChecked(li, checked) {
       let childCheckboxes = li.querySelectorAll('ul input[type=checkbox]');
@@ -302,42 +316,42 @@
         );
         ctx.restore();
       }
+
+      // --- Draw hitbox rectangles from hitboxes.json ---
+      ctx.save();
+      ctx.scale(scale, scale);
+      ctx.lineWidth = 2 / zoom / scale;
+      if (selectedFiles && hitboxData) {
+        selectedFiles.forEach(fname => {
+          // Extract character code from filename (e.g., "ul_dm.png" -> "dm")
+          let ch = fname.split('_')[1];
+          if (ch) ch = ch.split('.')[0];
+          let color = CHAR_COLORS[ch] || 'red';
+          ctx.strokeStyle = color;
+          let imgW = overlayImg ? overlayImg.width : 0;
+          let imgH = overlayImg ? overlayImg.height : 0;
+          if (hitboxData[fname]) {
+            hitboxData[fname].forEach(rect => {
+              const [x0, y0, x1, y1] = rect;
+              ctx.strokeRect(
+                x0 - imgW / 2 - overlayOffsetX,
+                y0 - imgH - overlayOffsetY,
+                x1 - x0,
+                y1 - y0
+              );
+            });
+          }
+        });
+      }
+      ctx.restore();
+      // --- End hitbox rectangles ---
+
       ctx.restore();
     }
 
     function updateImage() {
-      // Abort previous request if still pending
-      if (composeAbortController) {
-        composeAbortController.abort();
-      }
-      composeAbortController = new AbortController();
-
-      fetch('/api/compose', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({files: selectedFiles}),
-        signal: composeAbortController.signal
-      })
-      .then(r => {
-        if (!r.ok) throw new Error("Request failed");
-        return r.blob();
-      })
-      .then(blob => {
-        let url = URL.createObjectURL(blob);
-        let img = new window.Image();
-        img.onload = function() {
-          overlayImg = img;
-          drawAll();
-          URL.revokeObjectURL(url);
-        };
-        img.src = url;
-      })
-      .catch(err => {
-        // Ignore abort errors, log others
-        if (err.name !== 'AbortError') {
-          console.error(err);
-        }
-      });
+      overlayImg = null;
+      drawAll();
     }
 
     // Mouse pan/zoom

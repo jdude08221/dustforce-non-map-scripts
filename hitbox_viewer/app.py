@@ -1,15 +1,7 @@
 import os
-import io
-from flask import Flask, request, send_file, jsonify, send_from_directory
-from PIL import Image, ImageDraw
-import numpy as np
+from flask import Flask, jsonify, send_from_directory
 
 # --- Constants and mappings ---
-SCALE_FACTOR = 48.0 / 95.0
-PIXELS_PER_UNIT = 1.0 / SCALE_FACTOR
-TOLERANCE = 50
-LINE_WIDTH = 3
-
 ATTACK_MAP = {
     'ul': 'Grounded Up Light', 'sl': 'Grounded Side Light', 'dl': 'Grounded Down Light',
     'aul': 'Aerial Up Light', 'adl': 'Aerial Down Light', 'asl': 'Aerial Side Light',
@@ -17,48 +9,8 @@ ATTACK_MAP = {
     'auh': 'Aerial Up Heavy', 'ash': 'Aerial Side Heavy', 'adh': 'Aerial Down Heavy'
 }
 CHAR_MAP = {'dm': 'dustman', 'dg': 'dustgirl', 'dk': 'dustkid', 'dw': 'dustworth'}
-CHAR_OUTLINE_HEX = {'dw': 0x96ad66, 'dm': 0x8199d3, 'dk': 0xb37ed4, 'dg': 0xbb584d}
-CHAR_COLORS = {k: ((v >> 16) & 255, (v >> 8) & 255, v & 255) for k, v in CHAR_OUTLINE_HEX.items()}
-TARGET_HEX = [0x52DB22, 0x52E23F]
-TARGET_RGB = [((h >> 16) & 255, (h >> 8) & 255, h & 255) for h in TARGET_HEX]
 
 IMAGE_DIR = os.path.abspath("images")
-
-def extract_hit_mask(pil_img, tol=TOLERANCE):
-    arr = np.array(pil_img.convert("RGB"), dtype=np.int16)
-    combined = np.zeros(arr.shape[:2], dtype=bool)
-    for tgt in TARGET_RGB:
-        diff = np.abs(arr - np.array(tgt))
-        combined |= np.all(diff <= tol, axis=2)
-    return Image.fromarray((combined.astype(np.uint8) * 255), mode="L")
-
-def compose_outline_overlay(filepaths):
-    # Use the original image size for overlay
-    if not filepaths:
-        return Image.new("RGBA", (95, 96), (0,0,0,0))
-    with Image.open(filepaths[0]) as first_img:
-        w, h = first_img.size
-
-    canvas = Image.new("RGBA", (w, h), (0,0,0,0))
-    draw = ImageDraw.Draw(canvas)
-
-    for fp in filepaths:
-        base = os.path.splitext(os.path.basename(fp))[0]
-        if "_" in base:
-            atk, ch = base.split("_", 1)
-        else:
-            atk, ch = "", ""
-        col = CHAR_COLORS.get(ch, (0,0,0))
-        with Image.open(fp) as im:
-            mask = extract_hit_mask(im)
-            bbox = mask.getbbox()
-            if "adh" in base:  # or use the exact filename for aerial down heavy
-                print(f"Aerial Down Heavy bbox for {fp}: {bbox}")
-            if bbox:
-                # Draw directly in image pixel coordinates
-                rect = (bbox[0], bbox[1], bbox[2], bbox[3])
-                draw.rectangle(rect, outline=col+(200,), width=LINE_WIDTH)
-    return canvas
 
 def build_tree():
     char_dict = {k: [] for k in CHAR_MAP}
@@ -153,20 +105,8 @@ def build_tree():
 app = Flask(__name__)
 
 @app.route("/api/tree")
-
 def api_tree():
     return jsonify(build_tree())
-
-@app.route("/api/compose", methods=["POST"])
-def api_compose():
-    data = request.json
-    files = data.get("files", [])
-    filepaths = [os.path.join(IMAGE_DIR, f) for f in files]
-    img = compose_outline_overlay(filepaths)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return send_file(buf, mimetype="image/png")
 
 @app.route("/")
 def index():
